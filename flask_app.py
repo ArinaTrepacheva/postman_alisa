@@ -1,129 +1,129 @@
-import os
-from flask import Flask, request, jsonify, make_response
+# импортируем библиотеки
+from flask import Flask, request, jsonify
 import logging
 
+# создаём приложение
+# мы передаём __name__, в нём содержится информация,
+# в каком модуле мы находимся.
+# В данном случае там содержится '__main__',
+# так как мы обращаемся к переменной из запущенного модуля.
+# если бы такое обращение, например, произошло внутри модуля logging,
+# то мы бы получили 'logging'
 app = Flask(__name__)
+
+# Устанавливаем уровень логирования
 logging.basicConfig(level=logging.INFO)
+
+# Создадим словарь, чтобы для каждой сессии общения
+# с навыком хранились подсказки, которые видел пользователь.
+# Это поможет нам немного разнообразить подсказки ответов
+# (buttons в JSON ответа).
+# Когда новый пользователь напишет нашему навыку,
+# то мы сохраним в этот словарь запись формата
+# sessionStorage[user_id] = {'suggests': ["Не хочу.", "Не буду.", "Отстань!" ]}
+# Такая запись говорит, что мы показали пользователю эти три подсказки.
+# Когда он откажется купить слона,
+# то мы уберем одну подсказку. Как будто что-то меняется :)
 sessionStorage = {}
 
+
 @app.route('/post', methods=['POST'])
+# Функция получает тело запроса и возвращает ответ.
+# Внутри функции доступен request.json - это JSON,
+# который отправила нам Алиса в запросе POST
 def main():
-    try:
-        # Логируем сырые входящие данные для отладки
-        raw_data = request.get_data()
-        logging.info(f'Raw request data: {raw_data}')
+    logging.info(f'Request: {request.json!r}')
 
-        if not request.json:
-            logging.error('Empty JSON request received')
-            return make_response(jsonify({
-                'response': {
-                    'text': 'Произошла ошибка: пустой запрос',
-                    'end_session': False,
-                    'buttons': get_suggests('default_user')
-                },
-                'version': '1.0',
-                'session': {
-                    'message_id': 0,
-                    'session_id': 'empty_session',
-                    'user_id': 'anonymous'
-                }
-            }), 200)
-
-        logging.info(f'Parsed request: {request.json!r}')
-
-        # Создаем базовую структуру ответа
-        response = {
-            'response': {
-                'text': 'Привет! Купи слона!',
-                'end_session': False,
-                'buttons': []
-            },
-            'version': request.json.get('version', '1.0'),
-            'session': request.json['session']
+    # Начинаем формировать ответ, согласно документации
+    # мы собираем словарь, который потом отдадим Алисе
+    response = {
+        'session': request.json['session'],
+        'version': request.json['version'],
+        'response': {
+            'end_session': False
         }
+    }
 
-        handle_dialog(request.json, response)
+    # Отправляем request.json и response в функцию handle_dialog.
+    # Она сформирует оставшиеся поля JSON, которые отвечают
+    # непосредственно за ведение диалога
+    handle_dialog(request.json, response)
 
-        logging.info(f'Response: {response!r}')
-        
-        # Явно указываем content-type
-        resp = make_response(jsonify(response), 200
-        resp.headers['Content-Type'] = 'application/json; charset=utf-8'
-        return resp
+    logging.info(f'Response:  {response!r}')
 
-    except Exception as e:
-        logging.error(f'Error processing request: {str(e)}', exc_info=True)
-        return make_response(jsonify({
-            'response': {
-                'text': 'Произошла внутренняя ошибка',
-                'end_session': False,
-                'buttons': get_suggests('error_user')
-            },
-            'version': '1.0',
-            'session': {
-                'message_id': 0,
-                'session_id': 'error_session',
-                'user_id': 'anonymous'
-            }
-        }), 200)
+    # Преобразовываем в JSON и возвращаем
+    return jsonify(response)
+
 
 def handle_dialog(req, res):
     user_id = req['session']['user_id']
 
     if req['session']['new']:
+        # Это новый пользователь.
+        # Инициализируем сессию и поприветствуем его.
+        # Запишем подсказки, которые мы ему покажем в первый раз
+
         sessionStorage[user_id] = {
-            'suggests': ["Не хочу.", "Не буду.", "Отстань!"],
-            'elephant_asked': False
+            'suggests': [
+                "Не хочу.",
+                "Не буду.",
+                "Отстань!",
+            ]
         }
+        # Заполняем текст ответа
         res['response']['text'] = 'Привет! Купи слона!'
+        # Получим подсказки
         res['response']['buttons'] = get_suggests(user_id)
         return
 
-    # Обработка числового ввода (как в вашем примере "1233")
-    if 'nlu' in req['request'] and 'entities' in req['request']['nlu']:
-        for entity in req['request']['nlu']['entities']:
-            if entity['type'] == 'YANDEX.NUMBER':
-                num = entity['value']
-                res['response']['text'] = f'Цифра {num} - это интересно, но купи слона!'
-                res['response']['buttons'] = get_suggests(user_id)
-                return
-
-    # Обработка текстового ввода
-    user_input = req['request'].get('original_utterance', '').lower()
-    
-    if not user_input.strip():
-        res['response']['text'] = 'Я вас не расслышала, повторите пожалуйста!'
-        res['response']['buttons'] = get_suggests(user_id)
-        return
-
-    if any(word in user_input for word in ['ладно', 'куплю', 'покупаю', 'хорошо', 'согласен']):
+    # Сюда дойдем только, если пользователь не новый,
+    # и разговор с Алисой уже был начат
+    # Обрабатываем ответ пользователя.
+    # В req['request']['original_utterance'] лежит весь текст,
+    # что нам прислал пользователь
+    # Если он написал 'ладно', 'куплю', 'покупаю', 'хорошо',
+    # то мы считаем, что пользователь согласился.
+    # Подумайте, всё ли в этом фрагменте написано "красиво"?
+    if req['request']['original_utterance'].lower() in [
+        'ладно',
+        'куплю',
+        'покупаю',
+        'хорошо'
+    ]:
+        # Пользователь согласился, прощаемся.
         res['response']['text'] = 'Слона можно найти на Яндекс.Маркете!'
         res['response']['end_session'] = True
-        res['response']['card'] = {
-            'type': 'BigImage',
-            'image_id': '997614/3a04d25b65407e9e8c24',
-            'title': 'Вот ваш слон!',
-            'description': 'Спасибо за покупку!'
-        }
-    else:
-        res['response']['text'] = f"Все говорят '{user_input}', а ты купи слона!"
-        res['response']['buttons'] = get_suggests(user_id)
+        return
 
+    # Если нет, то убеждаем его купить слона!
+    res['response']['text'] = \
+        f"Все говорят '{req['request']['original_utterance']}', а ты купи слона!"
+    res['response']['buttons'] = get_suggests(user_id)
+
+
+# Функция возвращает две подсказки для ответа.
 def get_suggests(user_id):
-    session = sessionStorage.get(user_id, {'suggests': ["Не хочу.", "Не буду.", "Отстань!"]})
-    
+    session = sessionStorage[user_id]
+
+    # Выбираем две первые подсказки из массива.
     suggests = [
         {'title': suggest, 'hide': True}
         for suggest in session['suggests'][:2]
     ]
-    
-    # Добавляем кнопку с ссылкой
-    suggests.append({
-        "title": "Ладно",
-        "url": "https://market.yandex.ru/search?text=слон",
-        "hide": True
-    })
-    
+
+    # Убираем первую подсказку, чтобы подсказки менялись каждый раз.
+    session['suggests'] = session['suggests'][1:]
+    sessionStorage[user_id] = session
+
+    # Если осталась только одна подсказка, предлагаем подсказку
+    # со ссылкой на Яндекс.Маркет.
+    if len(suggests) < 2:
+        suggests.append({
+            "title": "Ладно",
+            "url": "https://market.yandex.ru/search?text=слон",
+            "hide": True
+        })
+
     return suggests
 
 if __name__ == "__main__":
