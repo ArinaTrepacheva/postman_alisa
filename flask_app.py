@@ -9,41 +9,62 @@ sessionStorage = {}
 @app.route('/post', methods=['POST'])
 def main():
     try:
+        # Логируем сырые входящие данные для отладки
+        raw_data = request.get_data()
+        logging.info(f'Raw request data: {raw_data}')
+
         if not request.json:
-            logging.error('Empty request received')
+            logging.error('Empty JSON request received')
             return make_response(jsonify({
                 'response': {
-                    'text': 'Произошла ошибка',
-                    'end_session': True
+                    'text': 'Произошла ошибка: пустой запрос',
+                    'end_session': False,
+                    'buttons': get_suggests('default_user')
                 },
-                'version': '1.0'
+                'version': '1.0',
+                'session': {
+                    'message_id': 0,
+                    'session_id': 'empty_session',
+                    'user_id': 'anonymous'
+                }
             }), 200)
 
-        logging.info(f'Request: {request.json!r}')
+        logging.info(f'Parsed request: {request.json!r}')
 
+        # Создаем базовую структуру ответа
         response = {
-            'session': request.json['session'],
-            'version': request.json['version'],
             'response': {
+                'text': 'Привет! Купи слона!',
                 'end_session': False,
-                'text': 'Привет! Купи слона!',  # Default response
                 'buttons': []
-            }
+            },
+            'version': request.json.get('version', '1.0'),
+            'session': request.json['session']
         }
 
         handle_dialog(request.json, response)
 
         logging.info(f'Response: {response!r}')
-        return make_response(jsonify(response), 200)
+        
+        # Явно указываем content-type
+        resp = make_response(jsonify(response), 200
+        resp.headers['Content-Type'] = 'application/json; charset=utf-8'
+        return resp
 
     except Exception as e:
-        logging.error(f'Error: {str(e)}')
+        logging.error(f'Error processing request: {str(e)}', exc_info=True)
         return make_response(jsonify({
             'response': {
-                'text': 'Произошла ошибка',
-                'end_session': True
+                'text': 'Произошла внутренняя ошибка',
+                'end_session': False,
+                'buttons': get_suggests('error_user')
             },
-            'version': '1.0'
+            'version': '1.0',
+            'session': {
+                'message_id': 0,
+                'session_id': 'error_session',
+                'user_id': 'anonymous'
+            }
         }), 200)
 
 def handle_dialog(req, res):
@@ -51,38 +72,60 @@ def handle_dialog(req, res):
 
     if req['session']['new']:
         sessionStorage[user_id] = {
-            'suggests': ["Не хочу.", "Не буду.", "Отстань!"]
+            'suggests': ["Не хочу.", "Не буду.", "Отстань!"],
+            'elephant_asked': False
         }
         res['response']['text'] = 'Привет! Купи слона!'
         res['response']['buttons'] = get_suggests(user_id)
         return
 
-    # Добавляем проверку на пустой original_utterance
-    if 'original_utterance' not in req['request'] or not req['request']['original_utterance'].strip():
-        res['response']['text'] = 'Не расслышала, повторите пожалуйста!'
+    # Обработка числового ввода (как в вашем примере "1233")
+    if 'nlu' in req['request'] and 'entities' in req['request']['nlu']:
+        for entity in req['request']['nlu']['entities']:
+            if entity['type'] == 'YANDEX.NUMBER':
+                num = entity['value']
+                res['response']['text'] = f'Цифра {num} - это интересно, но купи слона!'
+                res['response']['buttons'] = get_suggests(user_id)
+                return
+
+    # Обработка текстового ввода
+    user_input = req['request'].get('original_utterance', '').lower()
+    
+    if not user_input.strip():
+        res['response']['text'] = 'Я вас не расслышала, повторите пожалуйста!'
         res['response']['buttons'] = get_suggests(user_id)
         return
 
-    user_input = req['request']['original_utterance'].lower()
-    if user_input in ['ладно', 'куплю', 'покупаю', 'хорошо']:
+    if any(word in user_input for word in ['ладно', 'куплю', 'покупаю', 'хорошо', 'согласен']):
         res['response']['text'] = 'Слона можно найти на Яндекс.Маркете!'
         res['response']['end_session'] = True
+        res['response']['card'] = {
+            'type': 'BigImage',
+            'image_id': '997614/3a04d25b65407e9e8c24',
+            'title': 'Вот ваш слон!',
+            'description': 'Спасибо за покупку!'
+        }
     else:
         res['response']['text'] = f"Все говорят '{user_input}', а ты купи слона!"
         res['response']['buttons'] = get_suggests(user_id)
 
 def get_suggests(user_id):
-    session = sessionStorage.get(user_id, {'suggests': []})
-    suggests = [{'title': s, 'hide': True} for s in session['suggests'][:2]]
+    session = sessionStorage.get(user_id, {'suggests': ["Не хочу.", "Не буду.", "Отстань!"]})
     
-    if len(suggests) < 2:
-        suggests.append({
-            "title": "Ладно",
-            "url": "https://market.yandex.ru/search?text=слон",
-            "hide": True
-        })
+    suggests = [
+        {'title': suggest, 'hide': True}
+        for suggest in session['suggests'][:2]
+    ]
+    
+    # Добавляем кнопку с ссылкой
+    suggests.append({
+        "title": "Ладно",
+        "url": "https://market.yandex.ru/search?text=слон",
+        "hide": True
+    })
     
     return suggests
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=True)
